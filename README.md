@@ -1,139 +1,194 @@
-<p align="center">
-  <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.svg">
-      <source media="(prefers-color-scheme: light)" srcset="docs/assets/logo-light.svg">
-      <img height="100" alt="Endee" src="docs/assets/logo-dark.svg">
-  </picture>
-</p>
+# RAG Query System
 
-<p align="center">
-    <b>High-performance open-source vector database for AI search, RAG, semantic search, and hybrid retrieval.</b>
-</p>
+A locally-run Retrieval-Augmented Generation (RAG) application that lets you upload documents and ask natural language questions against their content. Built with Flask, FAISS, Sentence Transformers, and a Flan-T5 language model.
 
-<p align="center">
-    <a href="./docs/getting-started.md"><img src="https://img.shields.io/badge/Quick_Start-Local_Setup-success?style=flat-square" alt="Quick Start"></a>
-    <a href="https://docs.endee.io/quick-start"><img src="https://img.shields.io/badge/Docs-Quick_Start-success?style=flat-square" alt="Docs"></a>
-    <a href="https://github.com/endee-io/endee/blob/master/LICENSE"><img src="https://img.shields.io/github/license/endee-io/endee?style=flat-square" alt="License"></a>
-    <a href="https://discord.gg/5HFGqDZQE3"><img src="https://img.shields.io/badge/Discord-Join_Chat-5865F2?logo=discord&style=flat-square" alt="Discord"></a>
-    <a href="https://endee.io/"><img src="https://img.shields.io/badge/Website-Endee-111111?style=flat-square" alt="Website"></a>
-    <!-- <a href="https://endee.io/benchmarks"><img src="https://img.shields.io/badge/Benchmarks-Coming_Soon-1F8B4C?style=flat-square" alt="Benchmarks"></a> -->
-    <!-- <a href="https://endee.io/cloud"><img src="https://img.shields.io/badge/Cloud-Coming_Soon-2496ED?style=flat-square" alt="Cloud"></a> -->
-</p>
+---
 
-<p align="center">
-<strong><a href="./docs/getting-started.md">Quick Start</a> • <a href="#why-endee">Why Endee</a> • <a href="#use-cases">Use Cases</a> • <a href="#features">Features</a> • <a href="#api-and-clients">API and Clients</a> • <a href="#docs-and-links">Docs</a> • <a href="#community-and-contact">Contact</a></strong>
-</p>
+## Project Overview
 
-# Endee: Open-Source Vector Database for AI Search
+The RAG Query System allows users to:
 
-**Endee** is a high-performance open-source vector database built for AI search and retrieval workloads. It is designed for teams building **RAG pipelines**, **semantic search**, **hybrid search**, recommendation systems, and filtered vector retrieval APIs that need production-oriented performance and control.
+- Upload one or more documents (PDF, DOCX, TXT)
+- Ask multiple natural language questions in a single session
+- Receive answers grounded in the content of the uploaded documents
 
-Endee combines vector search with filtering, sparse retrieval support, backup workflows, and deployment flexibility across local builds and Docker-based environments. The project is implemented in C++ and optimized for modern CPU targets, including AVX2, AVX512, NEON, and SVE2.
+Rather than relying on a general-purpose LLM with no document context, this system first retrieves the most relevant passage from your documents, then feeds it as context to the language model — resulting in more accurate, document-specific answers.
 
-If you want the fastest path to evaluate Endee locally, start with the [Getting Started guide](./docs/getting-started.md) or the hosted docs at [docs.endee.io](https://docs.endee.io/quick-start).
+---
 
-## Why Endee
+## System Design
 
-- Built as a dedicated vector database for AI applications, search systems, and retrieval-heavy workloads.
-- Supports dense vector retrieval plus sparse search capabilities for hybrid search use cases.
-- Includes payload filtering for metadata-aware retrieval and application-specific query logic.
-- Ships with operational features already documented in this repo, including backup flows and runtime observability.
-- Offers flexible deployment paths: local scripts, manual builds, Docker images, and prebuilt registry images.
+The system is split into two main components: a Flask web application (`app.py`) and a RAG backend (`system.py`).
 
-## Getting Started
-
-The full installation, build, Docker, runtime, and authentication instructions are in [docs/getting-started.md](./docs/getting-started.md).
-
-Fastest local path:
-
-```bash
-chmod +x ./install.sh ./run.sh
-./install.sh --release --avx2
-./run.sh
+```
+User Browser
+     │
+     ▼
+┌─────────────────────────────┐
+│        Flask App (app.py)   │
+│                             │
+│  ┌──────────┐  ┌─────────┐  │
+│  │  /upload │  │ /query  │  │
+│  └────┬─────┘  └────┬────┘  │
+│       │              │      │
+│  Text Extraction   Query    │
+│  (PDF/DOCX/TXT)  Handling   │
+└───────┬──────────────┬──────┘
+        │              │
+        ▼              ▼
+┌───────────────────────────────┐
+│         RAGSystem (system.py) │
+│                               │
+│  SentenceTransformer Encoder  │
+│         (all-MiniLM-L6-v2)   │
+│               │               │
+│          FAISS Index          │
+│    (IndexFlatIP, cosine sim)  │
+└───────────────────────────────┘
+        │
+        ▼
+┌────────────────────────────┐
+│  Flan-T5 QA Pipeline       │
+│  (google/flan-t5-base)     │
+│  Generates final answer    │
+└────────────────────────────┘
 ```
 
-The server listens on port `8080`. For detailed setup paths, supported operating systems, CPU optimization flags, Docker usage, and authentication examples, use:
+### Step-by-step Flow
 
-- [Getting Started](./docs/getting-started.md)
-- [Hosted Quick Start Docs](https://docs.endee.io/quick-start)
+**Document Ingestion**
 
-## Use Cases
+1. User uploads files via the web UI.
+2. `app.py` extracts text from each file using `pdfplumber` (PDF), `python-docx` (DOCX), or plain file reading (TXT).
+3. Text is split into chunks — first by double newlines (paragraphs), then by sentence boundaries.
+4. Chunks are passed to `RAGSystem.load_documents()`.
 
-### RAG and AI Retrieval
+**Embedding & Indexing**
 
-Use Endee as the retrieval layer for question answering, chat assistants, copilots, and other RAG applications that need fast vector search with metadata-aware filtering.
+5. `RAGSystem` encodes all chunks using `sentence-transformers/all-MiniLM-L6-v2` (384-dimensional embeddings).
+6. Embeddings are L2-normalized and stored in a FAISS `IndexFlatIP` (inner product = cosine similarity after normalization).
 
-### Agentic AI and AI Agent Memory
+**Query & Answer Generation**
 
-Use Endee as the long-term memory and context retrieval layer for AI agents built with frameworks like LangChain, CrewAI, AutoGen, and LlamaIndex. Store and retrieve past observations, tool outputs, conversation history, and domain knowledge mid-execution with low-latency filtered vector search, so your autonomous agents get the right context without stalling their reasoning loop.
+7. The user submits one or more questions (one per line).
+8. Each question is embedded and searched against the FAISS index (`top_k=1`).
+9. The best-matching chunk is used as context in the prompt: `Context: {chunk}\nQuestion: {question}\nAnswer:`.
+10. The Flan-T5 model generates an answer from this prompt.
+11. Results are displayed in the UI showing the question, answer, and source context.
 
-### Semantic Search
+---
 
-Build semantic search experiences for documents, products, support content, and knowledge bases using vector similarity search instead of exact keyword-only matching.
+## Use of FAISS (FAISS / "Endee")
 
-### Hybrid Search
+[FAISS](https://github.com/facebookresearch/faiss) (Facebook AI Similarity Search) is the vector similarity engine that powers the retrieval step of this RAG pipeline.
 
-Combine dense retrieval, sparse vectors, and filtering to improve relevance for search workflows where both semantic understanding and term-level precision matter.
+**Why FAISS?**
 
-### Recommendations and Matching
+Traditional keyword search (like BM25) matches exact words. FAISS enables **semantic search** — finding passages that are conceptually similar to the question even when they use different words.
 
-Support recommendation, similarity matching, and nearest-neighbor retrieval workflows across text, embeddings, and other high-dimensional representations.
+**How it's used here**
 
-## Features
+| Setting | Value |
+|---|---|
+| Index type | `IndexFlatIP` (exact inner product search) |
+| Embedding dim | 384 (from MiniLM) |
+| Normalization | L2-normalized before indexing, so inner product = cosine similarity |
+| `top_k` | 1 — retrieves the single best-matching chunk per question |
 
-- **Vector search** for AI retrieval and semantic similarity workloads.
-- **Hybrid retrieval support** with sparse vector capabilities documented in [docs/sparse.md](./docs/sparse.md).
-- **Payload filtering** for structured retrieval logic documented in [docs/filter.md](./docs/filter.md).
-- **Backup APIs and flows** documented in [docs/backup-system.md](./docs/backup-system.md).
-- **Operational logging and instrumentation** documented in [docs/logs.md](./docs/logs.md) and [docs/mdbx-instrumentation.md](./docs/mdbx-instrumentation.md).
-- **CPU-targeted builds** for AVX2, AVX512, NEON, and SVE2 deployments.
-- **Docker deployment options** for local and server environments.
+**Key FAISS calls in `system.py`**
 
-## API and Clients
+```python
+# Build index
+self.index = faiss.IndexFlatIP(self.embedding_dim)
+self.index.add(embeddings.astype('float32'))
 
-Endee exposes an HTTP API for managing indexes and serving retrieval workloads. The current repo documentation and examples focus on running the server directly and calling its API endpoints.
+# Query
+similarities, indices = self.index.search(query_embedding, top_k)
+```
 
-Current developer entry points:
+`IndexFlatIP` performs exhaustive (exact) search — suitable for small-to-medium document collections. For very large corpora, this can be swapped for an approximate index like `IndexIVFFlat` for faster retrieval at the cost of some accuracy.
 
-- [Getting Started](./docs/getting-started.md) for local build and run flows
-- [Hosted Docs](https://docs.endee.io/quick-start) for product documentation
-- [Release Notes 1.0.0](https://github.com/endee-io/endee/releases/tag/1.0.0) for recent platform changes
+---
 
-## Docs and Links
+## Setup Instructions
 
-- [Getting Started](./docs/getting-started.md)
-- [Hosted Documentation](https://docs.endee.io/quick-start)
-- [Release Notes](https://github.com/endee-io/endee/releases/tag/1.0.0)
-- [Sparse Search](./docs/sparse.md)
-- [Filtering](./docs/filter.md)
-- [Backups](./docs/backup-system.md)
+### Prerequisites
 
-## Community and Contact
+- Python 3.8 or higher
+- `pip`
 
-- Join the community on [Discord](https://discord.gg/5HFGqDZQE3)
-- Visit the website at [endee.io](https://endee.io/)
-- For trademark or branding permissions, contact [enterprise@endee.io](mailto:enterprise@endee.io)
+### 1. Clone the Repository
 
-## Contributing
+```bash
+git clone <your-repo-url>
+cd rag-query-system
+```
 
-We welcome contributions from the community to help make vector search faster and more accessible for everyone.
+### 2. Install Dependencies
 
-- Submit pull requests for fixes, features, and improvements
-- Report bugs or performance issues through GitHub issues
-- Propose enhancements for search quality, performance, and deployment workflows
+```bash
+pip install flask werkzeug pdfplumber python-docx faiss-cpu sentence-transformers transformers torch
+```
 
-## License
+> **Note:** If you have a CUDA-capable GPU and want faster inference, install `faiss-gpu` instead of `faiss-cpu` and use the appropriate PyTorch CUDA build.
 
-Endee is open source software licensed under the **Apache License 2.0**. See the [LICENSE](./LICENSE) file for full terms.
+### 3. Project Structure
 
-## Trademark and Branding
+```
+rag-query-system/
+├── app.py          # Flask application, file upload, text extraction, query handling
+├── system.py       # RAGSystem class — embedding, FAISS indexing, retrieval
+├── templates/
+│   └── index.html  # Web UI
+└── uploads/        # Created automatically on first upload
+```
 
-“Endee” and the Endee logo are trademarks of Endee Labs.
+> **Important:** Move `index.html` into a `templates/` folder — Flask's `render_template` looks there by default.
 
-The Apache License 2.0 does not grant permission to use the Endee name, logos, or branding in a way that suggests endorsement or affiliation.
+```bash
+mkdir templates
+mv index.html templates/
+```
 
-If you offer a hosted or managed service based on this software, you must use your own branding and avoid implying it is an official Endee service.
+### 4. Run the Application
 
-## Third-Party Software
+```bash
+python app.py
+```
 
-This project includes or depends on third-party software components licensed under their respective open-source licenses. Use of those components is governed by their own license terms.
+The app starts on `http://127.0.0.1:5000` by default.
+
+### 5. Using the App
+
+1. Open `http://127.0.0.1:5000` in your browser.
+2. Upload one or more PDF, DOCX, or TXT files.
+3. Once uploaded and processed, type your questions (one per line) in the text area.
+4. Click **Submit** to receive answers with their source context.
+
+---
+
+## Known Issues & Limitations
+
+- **Answer variable bug in `app.py`:** In the `/query` route, `answer = ". ".join(answer.split(". ")[:2])` references `answer` before it is assigned from the model output. Replace this with:
+  ```python
+  full_text = response[0]['generated_text']
+  answer = full_text[len(prompt):].strip()  # Extract only the answer portion
+  answer = ". ".join(answer.split(". ")[:2])
+  ```
+- **Flan-T5 model size:** `flan-t5-base` is lightweight but limited in reasoning depth. Consider upgrading to `flan-t5-large` or `flan-t5-xl` for better answers on complex questions.
+- **No persistence:** The FAISS index is held in memory only. Restarting the server requires re-uploading documents.
+- **Single-chunk retrieval:** Only `top_k=1` chunk is retrieved. Increasing this and concatenating chunks can improve answer quality for questions spanning multiple passages.
+
+---
+
+## Dependencies Summary
+
+| Library | Purpose |
+|---|---|
+| `flask` | Web framework |
+| `pdfplumber` | PDF text extraction |
+| `python-docx` | DOCX text extraction |
+| `sentence-transformers` | Text embedding (MiniLM) |
+| `faiss-cpu` | Vector similarity search |
+| `transformers` | Flan-T5 QA pipeline |
+| `torch` | PyTorch backend for transformers |

@@ -1,0 +1,6 @@
+Flask
+transformers
+pdfplumber
+python-docx
+sentence-transformers
+faiss-cpu
